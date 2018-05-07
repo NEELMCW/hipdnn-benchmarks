@@ -60,10 +60,10 @@ int main(int argc, char *argv[])
     device_init();
 
     // enable profiling
-    CHECK_MIO(miopenEnableProfiling(mio::handle(), true));
+//    CHECK_MIO(miopenEnableProfiling(mio::handle(), true));
 
     alexNet();
 
-    miopenDestroy(mio::handle());
+//    miopenDestroy(mio::handle());
     return 0;
 }
