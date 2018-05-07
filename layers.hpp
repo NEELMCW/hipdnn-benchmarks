@@ -5,11 +5,11 @@
 #include "function.hpp"
 
 struct ConvDesc {
-    miopenConvolutionDescriptor_t desc;
+	hipdnnConvolutionDescriptor_t desc;
 
     ConvDesc(int pad_h, int pad_w, int u, int v, int upscalex, int upscaley) {
-        CHECK_MIO(miopenCreateConvolutionDescriptor(&desc));
-        CHECK_MIO(miopenInitConvolutionDescriptor(desc, miopenConvolution, pad_h, pad_w, u, v, upscalex, upscaley));
+        CHECK_HIPDNN(hipdnnCreateConvolutionDescriptor(&desc));
+        CHECK_HIPDNN(hipdnnSetConvolution2dDescriptor(desc, pad_h, pad_w, u, v, upscalex, upscaley, HIPDNN_CONVOLUTION));
     }
 
     // create with padding and stride, default upscale = 1
@@ -25,7 +25,7 @@ struct ConvDesc {
     }
 
     ~ConvDesc() {
-        CHECK_MIO(miopenDestroyConvolutionDescriptor(desc));
+        CHECK_HIPDNN(hipdnnDestroyConvolutionDescriptor(desc));
     }
 };
 
@@ -45,7 +45,7 @@ struct ConvLayerDesc {
 static Dim getConvOutputDim(int padding, int stride, const TensorDesc& input, const TensorDesc& weights) {
     int n, c, h, w;
     ConvDesc d(padding, padding, stride, stride, 1, 1);
-    CHECK_MIO(miopenGetConvolutionForwardOutputDim(d.desc, input.desc, weights.desc, &n, &c, &h, &w));
+    CHECK_HIPDNN(hipdnnGetConvolution2dForwardOutputDim(d.desc, input.desc, weights.desc, &n, &c, &h, &w));
     return Dim(n, c, h, w);
 }
 
@@ -55,9 +55,9 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
     const Tensor* input_ref;
 
     // algorithm selection:
-    miopenConvFwdAlgorithm_t fwd_algo;
-    miopenConvBwdWeightsAlgorithm_t bwd_weights_algo;
-    miopenConvBwdDataAlgorithm_t bwd_data_algo;
+    hipdnnConvolutionFwdAlgo_t fwd_algo;
+    hipdnnConvolutionBwdFilterAlgo_t bwd_weights_algo;
+    hipdnnConvolutionBwdDataAlgo_t bwd_data_algo;
 
 
     virtual std::ostream& write_name(std::ostream& os) const {
@@ -93,62 +93,65 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
 
     void init_forward(const Tensor& input, Tensor& output) override {
         size_t fwd_workspace_size;
-        CHECK_MIO(miopenConvolutionForwardGetWorkSpaceSize(mio::handle(), weights.desc, input.desc, this->desc, output.desc, &fwd_workspace_size));
+        // PRNSOS: Note Passing uninitialized fwd_algo to hipdnnGetConvolutionForwardWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        CHECK_HIPDNN(hipdnnGetConvolutionForwardWorkspaceSize(hipdnn::handle(), input.desc, weights.desc, this->desc, output.desc, this->fwd_algo, &fwd_workspace_size));
         DEBUG("Init fwd " << *this << " req workspace: " << fwd_workspace_size);
 
         DevBuffer& buffer = WorkSpace::get(fwd_workspace_size);
 
         // find best algo, and benchmark!
-        miopenConvAlgoPerf_t perfs[4];
+        hipdnnConvolutionFwdAlgoPerf_t perfs[4];
         int returned_algos;
-        CHECK_MIO(miopenFindConvolutionForwardAlgorithm(mio::handle(), input.desc, input.data, weights.desc, weights.data, this->desc, output.desc, output.data, 4, &returned_algos, perfs, buffer.data, fwd_workspace_size, false));
+        CHECK_HIPDNN(hipdnnFindConvolutionForwardAlgorithmEx(hipdnn::handle(), input.desc, input.data, weights.desc, weights.data, this->desc, output.desc, output.data, 4, &returned_algos, perfs, buffer.data, fwd_workspace_size));
 
-        INFO("\tMIOpen Found " << returned_algos << " fwd algorithms, choosing " << perfs[0].fwd_algo << ": ");
+        INFO("\tHipDNN Found " << returned_algos << " fwd algorithms, choosing " << perfs[0].algo << ": ");
         for (int i = 0; i < returned_algos; ++i) {
-            INFO("\t\t" << i << ") " << perfs[i].fwd_algo << " - time: " << perfs[i].time << ", Memory: " << perfs[i].memory);
+            INFO("\t\t" << i << ") " << perfs[i].algo << " - time: " << perfs[i].time << ", Memory: " << perfs[i].memory);
         }
 
-        fwd_algo = perfs[0].fwd_algo;
+        fwd_algo = perfs[0].algo;
     }
 
     void find_bwd_data_algo(const Tensor& doutput, Tensor& dinput) {
         size_t bwd_data_workspace_size;
-        CHECK_MIO(miopenConvolutionBackwardDataGetWorkSpaceSize(mio::handle(), doutput.desc, weights.desc, this->desc, dinput.desc, &bwd_data_workspace_size));
+        // PRNSOS: Note Passing uninitialized fwd_algo to hipdnnGetConvolutionBackwardDataWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        CHECK_HIPDNN(hipdnnGetConvolutionBackwardDataWorkspaceSize(hipdnn::handle(), weights.desc, doutput.desc, this->desc, dinput.desc, this->bwd_data_algo, &bwd_data_workspace_size));
         DEBUG("Init bwd_data " << *this << " req workspace: " << bwd_data_workspace_size);
 
         DevBuffer& buffer = WorkSpace::get(bwd_data_workspace_size);
 
         // find best algo, and benchmark!
-        miopenConvAlgoPerf_t perfs[5];
+        hipdnnConvolutionBwdDataAlgoPerf_t perfs[5];
         int returned_algos;
-        CHECK_MIO(miopenFindConvolutionBackwardDataAlgorithm(mio::handle(), doutput.desc, doutput.data, weights.desc, weights.data, this->desc, dinput.desc, dinput.data, 5, &returned_algos, perfs, buffer.data, bwd_data_workspace_size, false));
+        CHECK_HIPDNN(hipdnnFindConvolutionBackwardDataAlgorithmEx(hipdnn::handle(), weights.desc, weights.data, doutput.desc, doutput.data, this->desc, dinput.desc, dinput.data, 5, &returned_algos, perfs, buffer.data, bwd_data_workspace_size));
 
-        INFO("\tMIOpen Found " << returned_algos << " bwd_data algorithms, choosing " << perfs[0].fwd_algo << ": ");
+        INFO("\tHipDNN Found " << returned_algos << " bwd_data algorithms, choosing " << perfs[0].algo << ": ");
         for (int i = 0; i < returned_algos; ++i) {
-            INFO("\t\t" << i << ") " << perfs[i].fwd_algo << " - time: " << perfs[i].time << ", Memory: " << perfs[i].memory);
+            INFO("\t\t" << i << ") " << perfs[i].algo << " - time: " << perfs[i].time << ", Memory: " << perfs[i].memory);
         }
 
-        bwd_data_algo = perfs[0].bwd_data_algo;
+        bwd_data_algo = perfs[0].algo;
     }
 
     void find_bwd_weights_algo(const Tensor& doutput, Tensor& input) {
         size_t bwd_weights_workspace_size;
-        CHECK_MIO(miopenConvolutionBackwardWeightsGetWorkSpaceSize(mio::handle(), doutput.desc, input.desc, this->desc, weights.desc, &bwd_weights_workspace_size));
+        // PRNSOS: Note Passing uninitialized fwd_algo to hipdnnGetConvolutionBackwardFilterWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        CHECK_HIPDNN(hipdnnGetConvolutionBackwardFilterWorkspaceSize(hipdnn::handle(), input.desc,  doutput.desc, this->desc, weights.desc, this->bwd_weights_algo,  &bwd_weights_workspace_size));
         DEBUG("Init bwd_weights " << *this << " req workspace: " << bwd_weights_workspace_size);
 
         DevBuffer& buffer = WorkSpace::get(bwd_weights_workspace_size);
 
         // find best algo, and benchmark!
-        miopenConvAlgoPerf_t perfs[5];
+        hipdnnConvolutionBwdFilterAlgoPerf_t perfs[5];
         int returned_algos;
-        CHECK_MIO(miopenFindConvolutionBackwardWeightsAlgorithm(mio::handle(), doutput.desc, doutput.data, input.desc, input.data, this->desc, dweights.desc, dweights.data, 5, &returned_algos, perfs, buffer.data, bwd_weights_workspace_size, false));
+        CHECK_HIPDNN(hipdnnFindConvolutionBackwardFilterAlgorithmEx(hipdnn::handle(), input.desc, input.data, doutput.desc, doutput.data, this->desc, dweights.desc, dweights.data, 5, &returned_algos, perfs, buffer.data, bwd_weights_workspace_size));
 
-        INFO("\tMIOpen Found " << returned_algos << " bwd_weights algorithms, choosing " << perfs[0].fwd_algo << ": ");
+        INFO("\tHipDNN Found " << returned_algos << " bwd_weights algorithms, choosing " << perfs[0].algo << ": ");
         for (int i = 0; i < returned_algos; ++i) {
-            INFO("\t\t" << i << ") " << perfs[i].fwd_algo << " - time: " << perfs[i].time << ", Memory: " << perfs[i].memory);
+            INFO("\t\t" << i << ") " << perfs[i].algo << " - time: " << perfs[i].time << ", Memory: " << perfs[i].memory);
         }
 
-        bwd_weights_algo = perfs[0].bwd_weights_algo;
+        bwd_weights_algo = perfs[0].algo;
     }
 
     void init_backward(const Tensor& doutput, Tensor& dinput) override {
@@ -160,7 +163,7 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
         float alpha = 1.f;
         float beta = 0.f;
         DevBuffer& buffer = WorkSpace::get();
-        CHECK_MIO(miopenConvolutionForward(mio::handle(), &alpha, input.desc, input.data, weights.desc, weights.data, this->desc, fwd_algo, &beta, output.desc, output.data, buffer.data, buffer.size));
+        CHECK_HIPDNN(hipdnnConvolutionForward(hipdnn::handle(), &alpha, input.desc, input.data, weights.desc, weights.data, this->desc, fwd_algo, buffer.data, buffer.size, &beta, output.desc, output.data));
         // save for backward
         input_ref = &input;
     }
@@ -169,15 +172,15 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
         float alpha = 1.f;
         float beta = 0.f;
         DevBuffer& buffer = WorkSpace::get();
-        CHECK_MIO(miopenConvolutionBackwardData(mio::handle(), &alpha, doutput.desc, doutput.data, weights.desc, weights.data, this->desc, bwd_data_algo, &beta, dinput.desc, dinput.data, buffer.data, buffer.size));
-        CHECK_MIO(miopenConvolutionBackwardWeights(mio::handle(), &alpha, doutput.desc, doutput.data, input_ref->desc, input_ref->data, this->desc, bwd_weights_algo, &beta, dweights.desc, dweights.data, buffer.data, buffer.size));
+        CHECK_HIPDNN(hipdnnConvolutionBackwardData(hipdnn::handle(), &alpha, weights.desc, weights.data, doutput.desc, doutput.data, this->desc, bwd_data_algo,  buffer.data, buffer.size, &beta, dinput.desc, dinput.data));
+        CHECK_HIPDNN(hipdnnConvolutionBackwardFilter(hipdnn::handle(), &alpha,  input_ref->desc, input_ref->data, doutput.desc, doutput.data, this->desc, bwd_weights_algo,  buffer.data, buffer.size, &beta, dweights.desc, dweights.data));
     }
 };
 
 
 struct PoolingLayer : public Layer {
-    miopenPoolingMode_t pool_mode;
-    miopenPoolingDescriptor_t desc;
+	hipdnnPoolingMode_t pool_mode;
+	hipdnnPoolingDescriptor_t desc;
 
     // needed for backward: original input, original output, indeces (as workspace)
     DevBuffer indeces_buf;
@@ -187,47 +190,50 @@ struct PoolingLayer : public Layer {
 
     int kernel_size, padding, stride;
 
-    static Dim getOutputDim(const TensorDesc& input, int kernel_size, int padding, int stride, miopenPoolingMode_t pool_mode) {
+    static Dim getOutputDim(const TensorDesc& input, int kernel_size, int padding, int stride, hipdnnPoolingMode_t pool_mode) {
         int n, c, h, w;
 
-        miopenPoolingDescriptor_t pool_desc;
-        CHECK_MIO(miopenCreatePoolingDescriptor(&pool_desc));
-        CHECK_MIO(miopenSet2dPoolingDescriptor(pool_desc, pool_mode, kernel_size, kernel_size, padding, padding, stride, stride));
-        CHECK_MIO(miopenGetPoolingForwardOutputDim(pool_desc, input.desc, &n, &c, &h, &w));
-        CHECK_MIO(miopenDestroyPoolingDescriptor(pool_desc));
+        hipdnnPoolingDescriptor_t pool_desc;
+        hipdnnNanPropagation_t maxpoolingNanOpt; // Dummy variable and doesn't affect miopenSetPooling2Ddescriptor
+        CHECK_HIPDNN(hipdnnCreatePoolingDescriptor(&pool_desc));
+        CHECK_HIPDNN(hipdnnSetPooling2dDescriptor(pool_desc, pool_mode, maxpoolingNanOpt, kernel_size, kernel_size, padding, padding, stride, stride));
+        CHECK_HIPDNN(hipdnnGetPooling2dForwardOutputDim(pool_desc, input.desc, &n, &c, &h, &w));
+        CHECK_HIPDNN(hipdnnDestroyPoolingDescriptor(pool_desc));
         return Dim(n, c, h, w);
     }
 
     virtual std::ostream& write_name(std::ostream& os) const override {
-        if (pool_mode == miopenPoolingMax)
+        if (pool_mode == HIPDNN_POOLING_MAX)
             os << "MaxPool(";
         else
             os << "AvgPool(";
         return os << kernel_size << "x" << kernel_size << ")";
     }
 
-    PoolingLayer(const TensorDesc& input_dim, int kernel_size, int padding, int stride, miopenPoolingMode_t pool_mode)
+    PoolingLayer(const TensorDesc& input_dim, int kernel_size, int padding, int stride, hipdnnPoolingMode_t pool_mode)
         : Layer((Dim&)input_dim, PoolingLayer::getOutputDim(input_dim, kernel_size, padding, stride, pool_mode)),
           pool_mode(pool_mode),
           kernel_size(kernel_size), padding(padding), stride(stride) {
-        CHECK_MIO(miopenCreatePoolingDescriptor(&desc));
-        CHECK_MIO(miopenSet2dPoolingDescriptor(desc, pool_mode, kernel_size, kernel_size, padding, padding, stride, stride));
+        CHECK_HIPDNN(hipdnnCreatePoolingDescriptor(&desc));
+        hipdnnNanPropagation_t maxpoolingNanOpt; // Dummy variable and doesn't affect miopenSetPooling2Ddescriptor
+        CHECK_HIPDNN(hipdnnSetPooling2dDescriptor(desc, pool_mode, maxpoolingNanOpt, kernel_size, kernel_size, padding, padding, stride, stride));
     }
 
     ~PoolingLayer() {
-        CHECK_MIO(miopenDestroyPoolingDescriptor(desc));
+        CHECK_HIPDNN(hipdnnDestroyPoolingDescriptor(desc));
     }
 
     virtual void init_forward(const Tensor&, Tensor&) override {
         size_t size;
-        CHECK_MIO(miopenPoolingGetWorkSpaceSize(output_desc.desc, &size));
+        //TODO: miopen to hip conversion of below PRNSOS
+        CHECK_HIPDNN(miopenPoolingGetWorkSpaceSize(output_desc.desc, &size));
         indeces_buf = DevBuffer(size);
     }
 
     virtual void forward(const Tensor& input, Tensor& output) override {
         float alpha = 1.f;
         float beta = 0.f;
-        CHECK_MIO(miopenPoolingForward(mio::handle(), desc, &alpha, input.desc, input.data, &beta, output.desc, output.data, true, indeces_buf.data, indeces_buf.size));
+        CHECK_HIPDNN(hipdnnPoolingForward(hipdnn::handle(), desc, &alpha, input.desc, input.data, &beta, output.desc, output.data));
         // save for backward
         this->input = &input;
         this->output = &output;
@@ -236,22 +242,22 @@ struct PoolingLayer : public Layer {
     virtual void backward(const Tensor& doutput, Tensor& dinput) override {
         float alpha = 1.f;
         float beta = 0.f;
-        CHECK_MIO(miopenPoolingBackward(mio::handle(), desc, &alpha, getOutputDesc().desc, output->data, doutput.desc, doutput.data, getInputDesc().desc, input->data, &beta, dinput.desc, dinput.data, indeces_buf.data));
+        CHECK_HIPDNN(hipdnnPoolingBackward(hipdnn::handle(), desc, &alpha, getOutputDesc().desc, output->data, doutput.desc, doutput.data, getInputDesc().desc, input->data, &beta, dinput.desc, dinput.data));
     }
 };
 
 struct MaxPool : public PoolingLayer {
     MaxPool(const TensorDesc& input_dim, int kernel_size, int padding, int stride)
-        : PoolingLayer(input_dim, kernel_size, padding, stride, miopenPoolingMax) {}
+        : PoolingLayer(input_dim, kernel_size, padding, stride, HIPDNN_POOLING_MAX) {}
 };
 
 struct AvgPool : public PoolingLayer {
     AvgPool(const TensorDesc& input_dim, int kernel_size, int padding, int stride)
-        : PoolingLayer(input_dim, kernel_size, padding, stride, miopenPoolingAverage) {}
+        : PoolingLayer(input_dim, kernel_size, padding, stride, HIPDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING) {}
 };
 
 struct ReLU : public Layer {
-    miopenActivationDescriptor_t desc;
+	hipdnnActivationDescriptor_t desc;
 
     const Tensor* input_ref;
     const Tensor* output_ref;
@@ -262,19 +268,20 @@ struct ReLU : public Layer {
     }
 
     ReLU(const TensorDesc& input_dim) : Layer(input_dim, input_dim) {
-        CHECK_MIO(miopenCreateActivationDescriptor(&desc));
-        CHECK_MIO(miopenSetActivationDescriptor(desc, miopenActivationRELU, 0.0, 0.0, 1.0));
+        CHECK_HIPDNN(hipdnnCreateActivationDescriptor(&desc));
+        hipdnnNanPropagation_t reluNanOpt; // dummy Variable for hipdnn sake PRNSOS
+        CHECK_HIPDNN(hipdnnSetActivationDescriptor(desc, HIPDNN_ACTIVATION_RELU, reluNanOpt,  0.0, 0.0, 1.0));
     }
 
 
     ~ReLU() {
-        CHECK_MIO(miopenDestroyActivationDescriptor(desc));
+        CHECK_HIPDNN(hipdnnDestroyActivationDescriptor(desc));
     }
 
     void forward(const Tensor& input, Tensor& output) {
         float alpha = 1.f;
         float beta = 0.f;
-        CHECK_MIO(miopenActivationForward(mio::handle(), desc, &alpha, input.desc, input.data, &beta, output.desc, output.data));
+        CHECK_HIPDNN(hipdnnActivationForward(hipdnn::handle(), desc, &alpha, input.desc, input.data, &beta, output.desc, output.data));
         // save for backward
         this->input_ref = &input;
         this->output_ref = &output;
@@ -283,7 +290,7 @@ struct ReLU : public Layer {
     void backward(const Tensor& doutput, Tensor& dinput) {
         float alpha = 1.f;
         float beta = 0.f;
-        CHECK_MIO(miopenActivationBackward(mio::handle(), desc, &alpha, output_ref->desc, output_ref->data, doutput.desc, doutput.data, input_ref->desc, input_ref->data, &beta, dinput.desc, dinput.data));
+        CHECK_HIPDNN(hipdnnActivationBackward(hipdnn::handle(), desc, &alpha, output_ref->desc, output_ref->data, doutput.desc, doutput.data, input_ref->desc, input_ref->data, &beta, dinput.desc, dinput.data));
     }
 };
 
@@ -357,7 +364,7 @@ struct Linear : public Layer {
 
 struct BatchNorm : public Layer {
     // size of internal tensors (spatial: 1C11, per activation: 1CHW)
-    miopenBatchNormMode_t bn_mode;
+	hipdnnBatchNormMode_t bn_mode;
     TensorDesc bn_dim;
 
     Tensor scale;
@@ -373,14 +380,14 @@ struct BatchNorm : public Layer {
 
     const Tensor* input_ref; // save reference to input for backward pass
 
-    static TensorDesc get_bn_dim(const TensorDesc& input_dim, miopenBatchNormMode_t bn_mode) {
+    static TensorDesc get_bn_dim(const TensorDesc& input_dim, hipdnnBatchNormMode_t bn_mode) {
         TensorDesc bn(0,0,0,0);
-        CHECK_MIO(miopenDeriveBNTensorDescriptor(bn.desc, input_dim.desc, bn_mode));
+        CHECK_HIPDNN(hipdnnDeriveBNTensorDescriptor(bn.desc, input_dim.desc, bn_mode));
         bn.update_get();
         return bn;
     }
 
-    BatchNorm(const TensorDesc& input_dim, miopenBatchNormMode_t bn_mode=miopenBNSpatial, double eps = 1e-05, double momentum = 0.1)
+    BatchNorm(const TensorDesc& input_dim, hipdnnBatchNormMode_t bn_mode=HIPDNN_BATCHNORM_SPATIAL, double eps = 1e-05, double momentum = 0.1)
         : Layer(input_dim, input_dim),
           bn_mode(bn_mode),
           bn_dim(get_bn_dim(input_dim, bn_mode)),
@@ -404,7 +411,7 @@ struct BatchNorm : public Layer {
     void forward(const Tensor& input, Tensor& output) {
         float alpha = 1.f;
         float beta = 0.f;
-        CHECK_MIO(miopenBatchNormalizationForwardTraining(mio::handle(),
+        CHECK_HIPDNN(hipdnnBatchNormalizationForwardTraining(hipdnn::handle(),
                  bn_mode,
                  &alpha,
                  &beta,
@@ -427,7 +434,7 @@ struct BatchNorm : public Layer {
     void backward(const Tensor& doutput, Tensor& dinput) {
         float alpha = 1.f;
         float beta = 0.f;
-        CHECK_MIO(miopenBatchNormalizationBackward(mio::handle(),
+        CHECK_HIPDNN(hipdnnBatchNormalizationBackward(hipdnn::handle(),
                      bn_mode,
                      &alpha, 
                      &beta,

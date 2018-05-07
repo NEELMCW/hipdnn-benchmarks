@@ -87,18 +87,18 @@ struct Dim {
 
 /// support only float32 for now
 struct TensorDesc : public Dim {
-    miopenTensorDescriptor_t desc;
+	hipdnnTensorDescriptor_t desc;
 
     TensorDesc() : Dim(0,0,0,0) {
     }
 
     TensorDesc(int n, int c, int h, int w) : Dim(n,c,h,w) {
-        CHECK_MIO(miopenCreateTensorDescriptor(&desc));
-        CHECK_MIO(miopenSet4dTensorDescriptor(desc, miopenFloat, n, c, h, w));
+        CHECK_HIPDNN(hipdnnCreateTensorDescriptor(&desc));
+        CHECK_HIPDNN(hipdnnSetTensor4dDescriptor(desc, HIPDNN_TENSOR_NCHW, HIPDNN_DATA_FLOAT, n, c, h, w));
     }
     TensorDesc(const Dim& dims) : Dim(dims) {
-        CHECK_MIO(miopenCreateTensorDescriptor(&desc));
-        CHECK_MIO(miopenSet4dTensorDescriptor(desc, miopenFloat, n, c, h, w));
+        CHECK_HIPDNN(hipdnnCreateTensorDescriptor(&desc));
+        CHECK_HIPDNN(hipdnnSetTensor4dDescriptor(desc, HIPDNN_TENSOR_NCHW, HIPDNN_DATA_FLOAT, n, c, h, w));
     }
 
     TensorDesc(const TensorDesc& o) : TensorDesc(o.n, o.c, o.h, o.w) {}
@@ -124,15 +124,15 @@ struct TensorDesc : public Dim {
 
     // updates the `Dim` fields by reading the descriptor `desc` with Get4dTensorDescriptor
     void update_get() {
-        miopenDataType_t dt;
+    	hipdnnDataType_t dt;
         int ns, cs, hs, ws;
-        CHECK_MIO(miopenGet4dTensorDescriptor(desc, &dt, &n, &c, &h, &w, &ns, &cs, &hs, &ws));
-        assert(dt == miopenFloat);
+        CHECK_HIPDNN(hipdnnGetTensor4dDescriptor(desc, &dt, &n, &c, &h, &w, &ns, &cs, &hs, &ws));
+        assert(dt == HIPDNN_DATA_FLOAT);
     }
 
     void free() {
         if (!(n == 0 && c == 0 && h == 0 && w == 0)) {
-            CHECK_MIO(miopenDestroyTensorDescriptor(desc));
+            CHECK_HIPDNN(hipdnnDestroyTensorDescriptor(desc));
         }
     }
 

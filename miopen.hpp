@@ -1,7 +1,7 @@
 #ifndef MY_MIOPEN_HPP
 #define MY_MIOPEN_HPP
 
-#include <miopen/miopen.h>
+#include <hipDNN.h>
 #include <hipblas.h>
 //#include <gperftools/profiler.h>
 
@@ -302,7 +302,7 @@ void device_init() {
 
 #endif
 
-const char* mio_err[] = {
+const char* hipdnn_err[] = {
     "StatusSuccess        ",
     "StatusNotInitialized ",
     "StatusInvalidValue   ",
@@ -314,30 +314,31 @@ const char* mio_err[] = {
 };
 
 
-#define CHECK_MIO(cmd) \
+#define CHECK_HIPDNN(cmd) \
 {\
-    miopenStatus_t miostat = cmd;\
-    if (miostat != miopenStatusSuccess) { \
-        fprintf(stderr, "error: '%s'(%d) at %s:%d\n", mio_err[(int)miostat], miostat,__FILE__, __LINE__); \
+	hipdnnStatus_t hipdnnstat = cmd;\
+    if (hipdnnstat != HIPDNN_STATUS_SUCCESS) { \
+        fprintf(stderr, "error: '%s'(%d) at %s:%d\n", hipdnn_err[(int)hipdnnstat], hipdnnstat,__FILE__, __LINE__); \
         exit(EXIT_FAILURE);\
     }\
 }
 
 // get miopenHandle globally via `mio::handle()`
-struct mio {
+struct hipdnn {
 private:
     // This is called once, the first time the MIOpen handle is retrieved
-    static miopenHandle_t init_mio() {
-        miopenHandle_t h;
+    static hipdnnHandle_t init_hipdnn() {
+    	hipdnnHandle_t h;
         CHECK_HIP(hipSetDevice(Devices::get_default_device().hip_id));
         hipStream_t q;
         CHECK_HIP(hipStreamCreate(&q));
-        CHECK_MIO(miopenCreateWithStream(&h, q));
+        CHECK_HIPDNN(hipdnnCreate(&h));
+        CHECK_HIPDNN(hipdnnSetStream(h, q));
         return h;
     }
 public:
-    static miopenHandle_t handle() {
-        static miopenHandle_t h = init_mio();
+    static hipdnnHandle_t handle() {
+        static hipdnnHandle_t h = init_hipdnn();
         return h;
     }
 };
