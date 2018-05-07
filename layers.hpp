@@ -9,7 +9,7 @@ struct ConvDesc {
 
     ConvDesc(int pad_h, int pad_w, int u, int v, int upscalex, int upscaley) {
         CHECK_HIPDNN(hipdnnCreateConvolutionDescriptor(&desc));
-        CHECK_HIPDNN(hipdnnSetConvolution2dDescriptor(desc, pad_h, pad_w, u, v, upscalex, upscaley, HIPDNN_CONVOLUTION));
+        CHECK_HIPDNN(hipdnnSetConvolution2dDescriptor(desc, pad_h, pad_w, u, v, upscalex, upscaley, HIPDNN_CONVOLUTION, HIPDNN_DATA_FLOAT));
     }
 
     // create with padding and stride, default upscale = 1
@@ -94,6 +94,7 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
     void init_forward(const Tensor& input, Tensor& output) override {
         size_t fwd_workspace_size;
         // PRNSOS: Note Passing uninitialized fwd_algo to hipdnnGetConvolutionForwardWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        this->fwd_algo = HIPDNN_CONVOLUTION_FWD_ALGO_GEMM;
         CHECK_HIPDNN(hipdnnGetConvolutionForwardWorkspaceSize(hipdnn::handle(), input.desc, weights.desc, this->desc, output.desc, this->fwd_algo, &fwd_workspace_size));
         DEBUG("Init fwd " << *this << " req workspace: " << fwd_workspace_size);
 
@@ -114,7 +115,8 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
 
     void find_bwd_data_algo(const Tensor& doutput, Tensor& dinput) {
         size_t bwd_data_workspace_size;
-        // PRNSOS: Note Passing uninitialized fwd_algo to hipdnnGetConvolutionBackwardDataWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        // PRNSOS: Note Passing dummy initialized back_data_algo to hipdnnGetConvolutionBackwardDataWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        this->bwd_data_algo = HIPDNN_CONVOLUTION_BWD_DATA_ALGO_0;
         CHECK_HIPDNN(hipdnnGetConvolutionBackwardDataWorkspaceSize(hipdnn::handle(), weights.desc, doutput.desc, this->desc, dinput.desc, this->bwd_data_algo, &bwd_data_workspace_size));
         DEBUG("Init bwd_data " << *this << " req workspace: " << bwd_data_workspace_size);
 
@@ -136,6 +138,7 @@ struct ConvLayer : public ConvDesc, public ConvLayerDesc, public Layer {
     void find_bwd_weights_algo(const Tensor& doutput, Tensor& input) {
         size_t bwd_weights_workspace_size;
         // PRNSOS: Note Passing uninitialized fwd_algo to hipdnnGetConvolutionBackwardFilterWorkspaceSize Since //in miopen, workspace size does not depend on algo
+        this->bwd_weights_algo = HIPDNN_CONVOLUTION_BWD_FILTER_ALGO_0;
         CHECK_HIPDNN(hipdnnGetConvolutionBackwardFilterWorkspaceSize(hipdnn::handle(), input.desc,  doutput.desc, this->desc, weights.desc, this->bwd_weights_algo,  &bwd_weights_workspace_size));
         DEBUG("Init bwd_weights " << *this << " req workspace: " << bwd_weights_workspace_size);
 
@@ -224,9 +227,9 @@ struct PoolingLayer : public Layer {
     }
 
     virtual void init_forward(const Tensor&, Tensor&) override {
-        size_t size;
+        size_t size = 0;
         //TODO: miopen to hip conversion of below PRNSOS
-        CHECK_HIPDNN(miopenPoolingGetWorkSpaceSize(output_desc.desc, &size));
+        //CHECK_HIPDNN(miopenPoolingGetWorkSpaceSize(output_desc.desc, &size));
         indeces_buf = DevBuffer(size);
     }
 
