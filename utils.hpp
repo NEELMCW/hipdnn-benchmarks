@@ -8,7 +8,7 @@
 #include <chrono>
 #include <vector>
 
-#include "miopen.hpp"
+#include "hipDNN.h"
 #include "function.hpp"
 
 
@@ -164,7 +164,7 @@ struct BenchmarkLogger : public Timer {
         float layer_time;
         for (int i = 0; i < reps; ++i) {
             m.forward();
-            CHECK_MIO(miopenGetKernelTime(mio::handle(), &layer_time));
+         //   CHECK_MIO(miopenGetKernelTime(mio::handle(), &layer_time));
             log_step("KernelTime", false, layer_time);
         }
     }
